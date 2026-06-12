@@ -809,7 +809,11 @@ CSS_IGNORE_TIME_AFTER_TRIM = 0.5
 function afcs_check_for_css()
 
     local was_css_enabled = afcs_css_enabled
-    local using_ffb = (efm_data_bus.fm_getUsingFFB() == 1.0)
+    -- fm_getUsingFFB calls Scooter.GetFFBEnabled (LuaScooter.cpp) which uses
+    -- lua_pushboolean, returning a Lua boolean. The original v2.3 code compared
+    -- this against 1.0, but in Lua true == 1.0 is always false, so FFB was never
+    -- detected and FFB users always got the non-FFB CSS threshold of 0.03.
+    local using_ffb = (efm_data_bus.fm_getUsingFFB() == true)
     local enter_threshold = DEFAULT_CSS_DEFLECTION
     local exit_threshold = DEFAULT_CSS_DEFLECTION
     local skip_entry = false
