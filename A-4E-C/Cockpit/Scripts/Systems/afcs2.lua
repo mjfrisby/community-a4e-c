@@ -755,6 +755,27 @@ function afcs_auto_trim_pitch()
     pitch_trim_handle:set(new_pitch_trim)
 end
 
+-- Returns a bank angle stepped toward afcs_bank_angle_hold at a controlled rate.
+-- Feeding the PID a slowly-moving target rather than the raw hold value prevents
+-- overshoot and growing oscillation when recovering from an abrupt upset.
+function afcs_step_bank_to_hold()
+    local current_bank = math.deg(sensor_data.getRoll())
+    local target       = afcs_bank_angle_hold
+
+    -- RECOVERY_RATE: maximum bank change per frame during upset recovery.
+    -- Tuning: increase for a snappier return; decrease for a more gradual one.
+    local RECOVERY_RATE = 1.5
+
+    local direction = (target >= current_bank) and 1 or -1
+    local new_bank  = current_bank + direction * math.min(RECOVERY_RATE, math.abs(target - current_bank))
+
+    if (direction > 0 and new_bank > target) or (direction < 0 and new_bank < target) then
+        new_bank = target
+    end
+
+    return new_bank
+end
+
 function afcs_find_heading_desired_bank_angle()
     
     local current_state = afcs_get_current_state()
@@ -1028,13 +1049,13 @@ function update_afcs()
         end
         return
     elseif afcs_state == AFCS_STATE_ATTITUDE_ONLY then
-        afcs_hold_bank(afcs_bank_angle_hold)
+        afcs_hold_bank(afcs_step_bank_to_hold())
         afcs_hold_pitch(afcs_pitch_angle_hold)
     elseif afcs_state == AFCS_STATE_ATTITUDE_HDG then
         afcs_hold_bank(afcs_find_heading_desired_bank_angle())
         afcs_hold_pitch(afcs_pitch_angle_hold)
     elseif afcs_state == AFCS_STATE_ALTITUDE_ONLY then
-        afcs_hold_bank(afcs_bank_angle_hold)
+        afcs_hold_bank(afcs_step_bank_to_hold())
         afcs_hold_altitude(afcs_altitude_hold)
     elseif afcs_state == AFCS_STATE_ALTITUDE_HDG then
         afcs_hold_bank(afcs_find_heading_desired_bank_angle())
