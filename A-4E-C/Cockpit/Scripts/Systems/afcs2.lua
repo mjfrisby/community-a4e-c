@@ -761,11 +761,10 @@ function afcs_find_heading_desired_bank_angle()
 
     local desired_heading_hold = afcs_heading_hold
 
-    --Are we rolling out because we are no longer in heading mode.
-    local rolling_out = false
+    -- When heading mode is not active, target the current heading so the aircraft
+    -- rolls level naturally rather than holding any particular bank angle.
     if current_state ~= AFCS_STATE_ATTITUDE_HDG and current_state ~= AFCS_STATE_ALTITUDE_HDG then
         desired_heading_hold = math.deg(sensor_data.getMagneticHeading())
-        rolling_out = true
     end
     
     local heading = math.deg(sensor_data.getMagneticHeading()) % 360
@@ -773,30 +772,54 @@ function afcs_find_heading_desired_bank_angle()
     local left = (heading - desired_heading_hold) % 360
     local right = (desired_heading_hold - heading) % 360
 
-    local bank_angle
-    local delta_hdg
-
     local current_bank_angle = math.deg(sensor_data.getRoll())
 
-    local bank_rate = 1
+    -- Signed heading error: negative = turn left, positive = turn right.
+    local delta_hdg = (left < right) and -left or right
 
-    if left < right then
-        delta_hdg = -left
-        bank_angle = clamp(current_bank_angle - bank_rate, -27, 27)
+    -- Target bank proportional to heading error, capped at ±MAX_BANK. Rollout to
+    -- wings-level is a natural consequence of the target shrinking as the heading
+    -- error closes. BANK_ANGLE_GAIN also controls the rollout window: max bank is
+    -- held until delta_hdg < MAX_BANK / BANK_ANGLE_GAIN degrees from the target.
+    -- Tuning: increase BANK_ANGLE_GAIN for a tighter/later rollout; decrease for earlier/gentler.
+    local MAX_BANK        = 27.0
+    local BANK_ANGLE_GAIN = 4.0
+    local target_bank = clamp(delta_hdg * BANK_ANGLE_GAIN, -MAX_BANK, MAX_BANK)
+
+    -- MAX_ROLL_RATE: maximum bank change per frame during roll-in.
+    -- TAPER_GAIN: controls how many degrees before MAX_BANK the roll-in begins to
+    --   slow; taper starts at dist_to_max = MAX_ROLL_RATE / TAPER_GAIN degrees.
+    -- ROLLOUT_RATE: bank change per frame during rollout, independent of turn rate.
+    --   Tuning: increase for a faster rollout; decrease for a more gradual one.
+    local MAX_ROLL_RATE = 2.0
+    local TAPER_GAIN    = 0.15
+    local ROLLOUT_RATE  = 1.5
+
+    local direction   = (target_bank >= current_bank_angle) and 1 or -1
+    local dist_to_max = MAX_BANK - math.abs(current_bank_angle)
+
+    -- When banking further into the turn, taper toward the limit and cap by
+    -- distance to target to avoid overshooting the commanded bank angle.
+    -- When rolling out (or recovering from an upset), step at ROLLOUT_RATE
+    -- regardless of how fast the proportional target is moving.
+    local banking_toward_limit = (direction * current_bank_angle > 0)
+    local bank_rate
+    if banking_toward_limit then
+        bank_rate = clamp(dist_to_max * TAPER_GAIN, 0.1, MAX_ROLL_RATE)
+        bank_rate = math.min(bank_rate, math.abs(target_bank - current_bank_angle))
     else
-        delta_hdg = right
-        bank_angle = clamp(current_bank_angle + bank_rate, -27, 27)
-    end
-    
-
-    --bank_angle = bank_angle * (clamp(math.abs(current_bank_angle / 27.5), 0.0, 1.0) + 0.1)
-
-    if (math.abs(delta_hdg) < 4 and not rolling_out ) then
-        bank_angle = bank_angle * math.abs(delta_hdg) / 5.0 --this is just a P from a PID loop
-        --bank_angle = bank_angle + (desired_bank_angle - bank_angle) / 100.0
+        bank_rate = ROLLOUT_RATE
     end
 
-    return bank_angle
+    local new_bank = current_bank_angle + direction * bank_rate
+
+    -- Snap to target if the step would overshoot it, preventing oscillation
+    -- when the bank converges on a small or zero target.
+    if (direction > 0 and new_bank > target_bank) or (direction < 0 and new_bank < target_bank) then
+        new_bank = target_bank
+    end
+
+    return clamp(new_bank, -MAX_BANK, MAX_BANK)
 end
 
 
